@@ -1,0 +1,168 @@
+- debug: var=active_group
+  when: oracle_install_lock_granted
+- debug: var=oracle_home
+  when: oracle_install_lock_granted
+
+# Check that TNS files exist
+
+- name: Check that sqlnet.ora exists
+  stat:
+    path: "{{ oracle_meta_sqlnet_ora }}"
+  register: oracle_install_stat_sqlnet
+  failed_when: not oracle_install_stat_sqlnet.stat.exists
+  when: oracle_link_tns
+
+- name: Check that tnsnames.ora exists
+  stat:
+    path: "{{ oracle_meta_tnsnames_ora }}"
+  register: oracle_install_stat_tns
+  failed_when: not oracle_install_stat_tns.stat.exists
+  when: oracle_link_tns
+
+#####################
+# Install ORACLE_HOME
+#####################
+
+- set_fact:
+    oracleinstallrsp: /tmp/oracle_install_{{ oracle_db_version }}.rsp
+
+- name: Prepare installation template
+  template:
+    src: "{{ oracle_db_versions[oracle_db_version]['template'] }}"
+    dest: "{{ oracleinstallrsp }}"
+    owner: "{{ oracle_db_owner }}"
+    group: "{{ oracle_db_group }}"
+    mode: 0660
+  when: oracle_install_lock_granted
+
+- name: Install database home
+  shell: "{{ oracle_installer_base }}/{{ oracle_db_versions[oracle_db_version]['installer'] }}/runInstaller -silent -responseFile {{ oracleinstallrsp }} -waitforcompletion -ignorePrereq -ignoreSysPrereqs"
+  args:
+    creates: "{{ oracle_home }}/bin/oracle"
+  when: oracle_install_lock_granted
+  register: oracle_installer_runinstaller
+
+- block:
+    - name: Enable DNFS
+      shell: "cd $ORACLE_HOME/rdbms/lib && make -f ins_rdbms.mk dnfs_on"
+      environment:
+        ORACLE_HOME: "{{ oracle_home }}"
+    - name: Run orainstRoot.sh
+      shell: "{{ oracle_inventory_location }}/orainstRoot.sh"
+      args:
+        creates: /etc/oraInst.loc
+      become: yes
+      become_user: root
+    - name: Run root.sh
+      shell: "{{ oracle_home }}/root.sh"
+      become: yes
+      become_user: root
+  when: oracle_installer_runinstaller.changed
+
+- block:
+    - name: Link sqlnet.ora
+      file:
+        path: "{{ oracle_home }}/network/admin/sqlnet.ora"
+        src: "{{ oracle_meta_sqlnet_ora }}"
+        state: link
+    - name: Link tnsnames.ora
+      file:
+        path: "{{ oracle_home }}/network/admin/tnsnames.ora"
+        src: "{{ oracle_meta_tnsnames_ora }}"
+        state: link
+  when: oracle_link_tns and oracle_installer_runinstaller.changed
+  
+######################
+# Patching ORACLE_HOME
+######################
+
+# OPatch
+
+- block:
+    - name: Remove old OPatch
+      file:
+        path: "{{ oracle_home }}/OPatch"
+        state: absent
+    - name: Unzip new OPatch
+      unarchive:
+        remote_src: yes
+        src: "{{ oracle_patch_base }}/{{ oracle_db_versions[oracle_db_version]['opatch'] }}"
+        dest: "{{ oracle_home }}"
+        owner: "{{ oracle_db_owner }}"
+        group: "{{ oracle_db_group }}"
+  when: oracle_installer_runinstaller.changed
+
+# opatchauto
+
+- name: Run opatchauto for RAC
+  shell: "{{ oracle_home }}/OPatch/opatchauto apply {{ oracle_patch_base }}/{{ oracle_install_patchname }} -oh {{ oracle_home }}"
+  become: yes
+  become_user: root
+  when: oracle_rac and oracle_db_versions[oracle_db_version]['autopatch'] is defined and oracle_installer_runinstaller.changed
+  with_items: "{{ oracle_db_versions[oracle_db_version]['autopatch'] }}"
+  loop_control:
+    loop_var: oracle_install_patchname
+
+- block:
+    - name: Get list of all subpatches
+      shell: find {{ oracle_patch_base }}/{{ oracle_install_patchname }} -maxdepth 1 -mindepth 1 -type d ! -name automation
+      register: oracle_install_subpatches
+      when: oracle_db_versions[oracle_db_version]['autopatch'] is defined
+      with_items: "{{ oracle_db_versions[oracle_db_version]['autopatch'] }}"
+      changed_when: no
+      loop_control:
+        loop_var: oracle_install_patchname
+    - name: Run opatchauto for single instance
+      shell: "$ORACLE_HOME/OPatch/opatch apply -silent"
+      args:
+        chdir: "{{ oracle_install_patchname }}"
+      ignore_errors: yes
+      when: oracle_db_versions[oracle_db_version]['autopatch'] is defined and oracle_install_subpatches
+      with_items: "{{ oracle_install_subpatches.results|map(attribute='stdout_lines')|list }}"
+      loop_control:
+        loop_var: oracle_install_patchname
+  when: not oracle_rac and oracle_installer_runinstaller.changed
+  environment:
+    ORACLE_HOME: "{{ oracle_home }}"
+
+# One-Off patches
+
+- block:
+    - name: Install one-off patches
+      shell: "{{ oracle_home }}/OPatch/opatch apply -silent"
+      args:
+        chdir: "{{ oracle_patch_base }}/{{ oracle_install_patchname }}"
+      when: oracle_db_versions[oracle_db_version]['oneoff'] is defined 
+      with_items: "{{ oracle_db_versions[oracle_db_version]['oneoff'] }}"
+      loop_control:
+        loop_var: oracle_install_patchname
+    - name: Rerun root.sh
+      shell: "$ORACLE_HOME/root.sh -silent"
+      become: yes
+      become_user: root
+      when: not oracle_rac
+  when: oracle_installer_runinstaller.changed
+  environment:
+    ORACLE_HOME: "{{ oracle_home }}"
+
+# Helping scripts
+
+- name: glogin.sql (db)
+  lineinfile: dest="{{ oracle_home }}/sqlplus/admin/glogin.sql" line='set sqlprompt "_user @ _connect_identifier:>"' backup=yes
+  when: oracle_installer_runinstaller.changed
+
+- name: Add profiles
+  template:
+    src: dotprofile.j2
+    dest: "{{ oracle_meta_db_owner_home }}/.profile_{{ oracle_db_version }}"
+    owner: "{{ oracle_db_owner }}"
+    mode: "0600"
+    backup: yes
+
+- name: Add .bashrc
+  template:
+    src: bashrc.j2
+    dest: "{{ oracle_meta_db_owner_home }}/.bashrc"
+    owner: "{{ oracle_db_owner }}"
+    group: "{{ oracle_db_group }}"
+    mode: "0600"
