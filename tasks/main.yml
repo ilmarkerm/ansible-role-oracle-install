@@ -1,5 +1,3 @@
-- debug: var=active_group
-  when: oracle_install_lock_granted
 - debug: var=oracle_home
   when: oracle_install_lock_granted
 
