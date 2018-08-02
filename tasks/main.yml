@@ -30,21 +30,59 @@
     dest: "{{ oracleinstallrsp }}"
     owner: "{{ oracle_db_owner }}"
     group: "{{ oracle_db_group }}"
-    mode: 0660
+    mode: "0660"
   when: oracle_install_lock_granted
 
-- name: Install database home
+# For software that needs to be installed (<18)
+- name: Install database home (up to 12.2)
   shell: "{{ oracle_installer_base }}/{{ oracle_db_versions[oracle_db_version]['installer'] }}/runInstaller -silent -responseFile {{ oracleinstallrsp }} -waitforcompletion -ignorePrereq -ignoreSysPrereqs"
   args:
     creates: "{{ oracle_home }}/bin/oracle"
-  when: oracle_install_lock_granted
+  when: oracle_install_lock_granted  and oracle_db_versions[oracle_db_version]['version'] < '18'
   register: oracle_installer_runinstaller
+  failed_when: oracle_installer_runinstaller.rc > 0 and "Successfully Setup Software" not in oracle_installer_runinstaller.stdout
+- name: Show runinstaller output
+  debug:
+    var: oracle_installer_runinstaller
+  when: oracle_installer_runinstaller is changed
 
+# For golden image distribution (>=18)
+- block:
+    - name: Create destination ORACLE_HOME directory (from 18)
+      file:
+        path: "{{ oracle_home }}"
+        state: directory
+        mode: "0755"
+        owner: "{{ oracle_db_owner }}"
+        group: "{{ oracle_db_group }}"
+    - name: Copy database home (from 18)
+      shell: "rsync -av {{ oracle_installer_base }}/{{ oracle_db_versions[oracle_db_version]['installer'] }}/ {{ oracle_home }}/"
+      args:
+        creates: "{{ oracle_home }}/bin/oracle"
+      register: oracle_installer_rsync
+    - name: Install database home (from 18)
+      shell: "{{ oracle_home }}/runInstaller -silent -responseFile {{ oracleinstallrsp }} -waitforcompletion"
+      register: oracle_installer_runinstaller18
+      when: oracle_installer_rsync is changed
+      failed_when: oracle_installer_runinstaller18.rc > 0 and "Successfully Setup Software" not in oracle_installer_runinstaller18.stdout
+    - name: Show runinstaller output
+      debug:
+        var: oracle_installer_runinstaller18
+      when: oracle_installer_runinstaller18 is changed
+  when: oracle_install_lock_granted and oracle_db_versions[oracle_db_version]['version'] >= '18'
+  
+# Common
+- set_fact:
+    oracle_db_was_installed: no
+- set_fact:
+    oracle_db_was_installed: yes
+  when: oracle_installer_runinstaller is changed or oracle_installer_runinstaller18 is changed
 - block:
     - name: Enable DNFS
       shell: "cd $ORACLE_HOME/rdbms/lib && make -f ins_rdbms.mk dnfs_on"
       environment:
         ORACLE_HOME: "{{ oracle_home }}"
+      when: oracle_dnfs
     - name: Run orainstRoot.sh
       shell: "{{ oracle_inventory_location }}/orainstRoot.sh"
       args:
@@ -55,7 +93,7 @@
       shell: "{{ oracle_home }}/root.sh"
       become: yes
       become_user: root
-  when: oracle_installer_runinstaller.changed
+  when: oracle_db_was_installed
 
 - block:
     - name: Link sqlnet.ora
@@ -68,7 +106,7 @@
         path: "{{ oracle_home }}/network/admin/tnsnames.ora"
         src: "{{ oracle_meta_tnsnames_ora }}"
         state: link
-  when: oracle_link_tns and oracle_installer_runinstaller.changed
+  when: oracle_link_tns and oracle_db_was_installed
   
 ######################
 # Patching ORACLE_HOME
@@ -88,7 +126,7 @@
         dest: "{{ oracle_home }}"
         owner: "{{ oracle_db_owner }}"
         group: "{{ oracle_db_group }}"
-  when: oracle_installer_runinstaller.changed
+  when: oracle_db_was_installed and oracle_db_versions[oracle_db_version]['opatch'] is defined
 
 # opatchauto
 
@@ -96,7 +134,7 @@
   shell: "{{ oracle_home }}/OPatch/opatchauto apply {{ oracle_patch_base }}/{{ oracle_install_patchname }} -oh {{ oracle_home }}"
   become: yes
   become_user: root
-  when: oracle_rac and oracle_db_versions[oracle_db_version]['autopatch'] is defined and oracle_installer_runinstaller.changed
+  when: oracle_rac and oracle_db_versions[oracle_db_version]['autopatch'] is defined and oracle_db_was_installed
   with_items: "{{ oracle_db_versions[oracle_db_version]['autopatch'] }}"
   loop_control:
     loop_var: oracle_install_patchname
@@ -119,7 +157,7 @@
       with_items: "{{ oracle_install_subpatches.results|map(attribute='stdout_lines')|list }}"
       loop_control:
         loop_var: oracle_install_patchname
-  when: not oracle_rac and oracle_installer_runinstaller.changed
+  when: not oracle_rac and oracle_db_was_installed
   environment:
     ORACLE_HOME: "{{ oracle_home }}"
 
@@ -139,7 +177,7 @@
       become: yes
       become_user: root
       when: not oracle_rac
-  when: oracle_installer_runinstaller.changed
+  when: oracle_db_was_installed
   environment:
     ORACLE_HOME: "{{ oracle_home }}"
 
@@ -147,7 +185,7 @@
 
 - name: glogin.sql (db)
   lineinfile: dest="{{ oracle_home }}/sqlplus/admin/glogin.sql" line='set sqlprompt "_user @ _connect_identifier:>"' backup=yes
-  when: oracle_installer_runinstaller.changed
+  when: oracle_db_was_installed
 
 - name: Add profiles
   template:

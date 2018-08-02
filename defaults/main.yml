@@ -1,4 +1,5 @@
 oracle_install_edition: EE
+oracle_dnfs: yes
 
 oracle_install_os_alias:
   - alias: sqlplus
