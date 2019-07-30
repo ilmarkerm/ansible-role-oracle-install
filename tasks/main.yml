@@ -3,16 +3,20 @@
 
 # Check that TNS files exist
 
+- debug:
+    msg: "{{ oracle_db_versions[oracle_db_version]['sqlnet_ora'] | default(oracle_meta_sqlnet_ora) }}"
+  when: oracle_link_tns
+
 - name: Check that sqlnet.ora exists
   stat:
-    path: "{{ oracle_meta_sqlnet_ora }}"
+    path: "{{ oracle_db_versions[oracle_db_version]['sqlnet_ora'] | default(oracle_meta_sqlnet_ora) }}"
   register: oracle_install_stat_sqlnet
   failed_when: not oracle_install_stat_sqlnet.stat.exists
   when: oracle_link_tns
 
 - name: Check that tnsnames.ora exists
   stat:
-    path: "{{ oracle_meta_tnsnames_ora }}"
+    path: "{{ oracle_db_versions[oracle_db_version]['tnsnames_ora'] | default(oracle_meta_tnsnames_ora) }}"
   register: oracle_install_stat_tns
   failed_when: not oracle_install_stat_tns.stat.exists
   when: oracle_link_tns
@@ -61,7 +65,7 @@
         creates: "{{ oracle_home }}/bin/oracle"
       register: oracle_installer_rsync
     - name: Install database home (from 18)
-      shell: "{{ oracle_home }}/runInstaller -silent -responseFile {{ oracleinstallrsp }} -waitforcompletion"
+      shell: "{{ oracle_home }}/runInstaller -silent -responseFile {{ oracleinstallrsp }} -waitforcompletion -ignorePrereq"
       register: oracle_installer_runinstaller18
       when: oracle_installer_rsync is changed
       failed_when: oracle_installer_runinstaller18.rc > 0 and "Successfully Setup Software" not in oracle_installer_runinstaller18.stdout
@@ -99,12 +103,12 @@
     - name: Link sqlnet.ora
       file:
         path: "{{ oracle_home }}/network/admin/sqlnet.ora"
-        src: "{{ oracle_meta_sqlnet_ora }}"
+        src: "{{ oracle_db_versions[oracle_db_version]['sqlnet_ora'] | default(oracle_meta_sqlnet_ora) }}"
         state: link
     - name: Link tnsnames.ora
       file:
         path: "{{ oracle_home }}/network/admin/tnsnames.ora"
-        src: "{{ oracle_meta_tnsnames_ora }}"
+        src: "{{ oracle_db_versions[oracle_db_version]['tnsnames_ora'] | default(oracle_meta_tnsnames_ora) }}"
         state: link
   when: oracle_link_tns and oracle_db_was_installed
   
