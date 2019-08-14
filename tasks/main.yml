@@ -47,7 +47,7 @@
   failed_when: oracle_installer_runinstaller.rc > 0 and "Successfully Setup Software" not in oracle_installer_runinstaller.stdout
 - name: Show runinstaller output
   debug:
-    var: oracle_installer_runinstaller
+    var: oracle_installer_runinstaller.stdout_lines
   when: oracle_installer_runinstaller is changed
 
 # For golden image distribution (>=18)
@@ -71,7 +71,7 @@
       failed_when: oracle_installer_runinstaller18.rc > 0 and "Successfully Setup Software" not in oracle_installer_runinstaller18.stdout
     - name: Show runinstaller output
       debug:
-        var: oracle_installer_runinstaller18
+        var: oracle_installer_runinstaller18.stdout_lines
       when: oracle_installer_runinstaller18 is changed
   when: oracle_install_lock_granted and oracle_db_versions[oracle_db_version]['version'] >= '18'
   
